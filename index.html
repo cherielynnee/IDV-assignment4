@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Singapore's Resident Population by Planning Subzone</title>
+  <style>
+    body {
+  font-family: Calibri, sans-serif;
+  background-color: white;
+  color: black;
+  text-align: center;
+  margin: 0;
+  padding: 20px;
+}
+
+h1, h3 {
+  margin: 0.5em 0;
+  font-family: 'Calibri Light', Calibri, sans-serif;
+  font-weight: strong;
+  font-size: 1.2em;
+}
+
+    button {
+      background-color: #f5ecdc;
+      color: #f26e41;
+      border: 0.5px solid #f26e41;
+      padding: 8px 12px;
+      margin: 4px;
+      cursor: pointer;
+      font-size: 14px;
+      border-radius: 4px;
+    }
+
+    .selected {
+      background-color: #ffffff;
+      border: 0.5px solid #f26e41;
+      color: #f26e41;
+      font-weight: normal;
+    }
+
+    #legend {
+      margin: 20px auto;
+      width: 320px;
+    }
+
+    #legend-bar {
+      width: 300px;
+      height: 15px;
+      background: linear-gradient(to right, #ffffff, #009999);
+      border: 0.5px solid #f26e41;
+      margin: auto;
+    }
+
+    #legend-scale {
+      display: flex;
+      justify-content: space-between;
+      width: 300px;
+      margin: auto;
+      color: black;
+    }
+
+    .tooltip {
+      position: absolute;
+      background-color: #fff;
+      color: #333;
+      border: 1px solid #aaa;
+      padding: 5px 8px;
+      border-radius: 4px;
+      pointer-events: none;
+      font-size: 13px;
+      font-family: Arial, sans-serif;
+      display: none;
+      z-index: 10;
+      box-shadow: 0 0 5px rgba(0, 0, 0, 0.15);
+    }
+
+    svg {
+      display: block;
+      margin: auto;
+      background-color: white;
+    }
+      .label-title {
+      font-size: 14px;
+      font-weight: normal;
+    }
+  </style>
+</head>
+<body>
+  <h1>Singapore's 2020 Resident Population by Planning Subzone</h1>
+  
+
+  <div>
+    <span class="label-title">Gender</span>
+    <button class="gender-toggle selected" data-gender="All">All</button>
+    <button class="gender-toggle" data-gender="Males">Males</button>
+    <button class="gender-toggle" data-gender="Females">Females</button>
+  </div>
+
+  <div>
+    <span class="label-title">Ethnicity</span>
+    <button class="ethnicity-toggle selected" data-ethnicity="Population">All</button>
+    <button class="ethnicity-toggle" data-ethnicity="Chinese">Chinese</button>
+    <button class="ethnicity-toggle" data-ethnicity="Malays">Malay</button>
+    <button class="ethnicity-toggle" data-ethnicity="Indians">Indians</button>
+    <button class="ethnicity-toggle" data-ethnicity="Others">Others</button>
+  </div>
+
+  <div id="map"></div>
+
+  <div id="legend">
+    <span class="label-title">Population Scale</span>
+    <div id="legend-bar"></div>
+    <div id="legend-scale" class="label-title">
+      <span id="legend-min">0</span>
+      <span id="legend-max">?</span>
+    </div>
+  </div>
+
+  <footer style="margin-top: 30px; font-size: 0.9em; color: #555;">
+    Source: Census of Population 2020, Department of Statistics Singapore<br/>
+    Created by Cherie Lynne Gomintong
+  </footer>
+
+  <div id="tooltip" class="tooltip"></div>
+
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script>
+    const width = 800, height = 500;
+
+    const svg = d3.select("#map")
+      .append("svg")
+      .attr("width", width)
+      .attr("height", height)
+      .style("background-color", "white");
+
+    const g = svg.append("g");
+
+    const zoom = d3.zoom()
+      .scaleExtent([1, 8])
+      .on("zoom", event => g.attr("transform", event.transform));
+
+    svg.call(zoom).call(zoom.transform, d3.zoomIdentity.translate(-width / 3, -height / 3).scale(1.6));
+
+    const projection = d3.geoMercator()
+      .center([103.8198, 1.3521])
+      .scale(50000)
+      .translate([width / 2, height / 2]);
+
+    const path = d3.geoPath().projection(projection);
+
+    let geojson, planningBorders;
+    let selectedGender = "All";
+    let selectedEthnicity = "Population";
+
+    Promise.all([
+      d3.json("sgmap.json"),
+      d3.csv("population2023_with_ethnicity_filled.csv")
+    ]).then(data => {
+      geojson = data[0];
+      const population = data[1];
+
+      geojson.features.forEach(d => {
+        const match = population.find(p => p.Subzone.trim().toUpperCase() === d.properties.Name.trim().toUpperCase());
+        if (match) {
+          Object.keys(match).forEach(key => {
+            if (key !== "Subzone" && key !== "Planning Area") {
+              d.properties[key] = isNaN(+match[key]) ? 0 : +match[key];
+            }
+          });
+        }
+      });
+
+      updateMap();
+    });
+
+    function getColumnKey(ethnicity, gender) {
+      if (ethnicity === "Population") {
+        if (gender === "Males") return "Population_Males";
+        if (gender === "Females") return "Population_Females";
+        return "Population";
+      } else {
+        if (gender === "Males") return `${ethnicity}_Males`;
+        if (gender === "Females") return `${ethnicity}_Females`;
+        return `${ethnicity}_Total`;
+      }
+    }
+
+    function updateMap() {
+      const column = getColumnKey(selectedEthnicity, selectedGender);
+      const maxVal = d3.max(geojson.features, d => d.properties[column]);
+      document.getElementById("legend-max").textContent = maxVal.toLocaleString();
+
+      const colorScale = d3.scaleSequential().domain([0, maxVal]).interpolator(d3.interpolateRgb("#ffffff", "#009999"));
+      const tooltip = d3.select("#tooltip");
+
+      g.selectAll("path").remove();
+
+      g.selectAll("path")
+        .data(geojson.features)
+        .join("path")
+        .attr("d", path)
+        .attr("fill", d => isNaN(d.properties[column]) ? colorScale(0) : colorScale(d.properties[column]))
+        .attr("stroke", "#c9a06f")
+        .attr("stroke-width", 0.5)
+        .on("mouseover", function (event, d) {
+          const val = d.properties[column];
+          const label = column.replaceAll("_", " ");
+          d3.select(this).attr("stroke-width", 1).attr("stroke", "#000000");
+          tooltip
+            .style("display", "block")
+            .html(`${d.properties.Name}<br>${isNaN(val) ? "<em>No data</em>" : `${label}: <strong>${val.toLocaleString()}</strong>`}`);
+        })
+        .on("mousemove", function (event) {
+          tooltip
+            .style("left", (event.pageX + 10) + "px")
+            .style("top", (event.pageY - 28) + "px");
+        })
+        .on("mouseout", function () {
+          d3.select(this).attr("stroke-width", 0.5).attr("stroke", "#c9a06f");
+          tooltip.style("display", "none");
+        });
+    }
+
+    d3.selectAll(".gender-toggle").on("click", function () {
+      selectedGender = this.getAttribute("data-gender");
+      d3.selectAll(".gender-toggle").classed("selected", false);
+      d3.select(this).classed("selected", true);
+      updateMap();
+    });
+
+    d3.selectAll(".ethnicity-toggle").on("click", function () {
+      selectedEthnicity = this.getAttribute("data-ethnicity");
+      d3.selectAll(".ethnicity-toggle").classed("selected", false);
+      d3.select(this).classed("selected", true);
+      updateMap();
+    });
+  </script>
+</body>
+</html>
